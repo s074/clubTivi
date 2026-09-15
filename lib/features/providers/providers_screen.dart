@@ -189,7 +189,7 @@ class _ProviderCard extends ConsumerWidget {
                   final count = await manager.refreshProvider(provider.id);
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Loaded $count channels')),
+                    SnackBar(content: Text('Loaded $count items (live + VOD + series)')),
                   );
                 } catch (e) {
                   if (!context.mounted) return;
@@ -248,7 +248,7 @@ class _ProviderCard extends ConsumerWidget {
       final count = await manager.refreshProvider(provider.id);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Loaded $count channels')),
+        SnackBar(content: Text('Loaded $count live channels')),
       );
     } catch (e) {
       if (!context.mounted) return;

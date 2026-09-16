@@ -1,3 +1,5 @@
+import 'dart:math' show max;
+
 import 'package:collection/collection.dart';
 import 'package:logger/logger.dart';
 import 'package:string_similarity/string_similarity.dart';
@@ -242,6 +244,7 @@ class VodRepository {
     VodTitleType mediaType = VodTitleType.movie,
     int? season,
     int? episode,
+    String? preferredLanguage,
   }) async {
     // Step 0: Xtream matches from the local DB (best-effort, never throws)
     var xtreamStreams = <ResolvedStream>[];
@@ -254,6 +257,7 @@ class VodRepository {
           mediaType: mediaType,
           season: season,
           episode: episode,
+          preferredLanguage: preferredLanguage,
         );
       } catch (e) {
         _log.w('Xtream DB lookup failed for $title: $e');
@@ -297,13 +301,14 @@ class VodRepository {
       }
     }
 
-    // Step 3: Build stream list — Xtream direct-play first, then cached,
-    // then non-cached torrents
-    final results = <ResolvedStream>[...xtreamStreams];
+    // Step 3: Build stream list — Xtream direct-play (already ranked) first,
+    // then cached torrents, then non-cached. Concatenated, never re-sorted:
+    // List.sort is unstable on long lists and would scramble the ranking.
+    final torrentStreams = <ResolvedStream>[];
     for (final torrent in torrents) {
       final hashLower = torrent.infoHash.toLowerCase();
       final cached = cachedHashes.contains(hashLower);
-      results.add(ResolvedStream(
+      torrentStreams.add(ResolvedStream(
         url: '', // resolved on-demand when user picks
         filename: torrent.title.isNotEmpty ? torrent.title : torrent.name,
         quality: torrent.quality.isNotEmpty ? torrent.quality : null,
@@ -313,18 +318,30 @@ class VodRepository {
         magnetUrl: torrent.magnetUrl,
         seeds: torrent.seeds,
       ));
-      if (results.length >= 15) break;
+      if (xtreamStreams.length + torrentStreams.length >= 15) break;
     }
 
-    // Sort: direct-play + cached first (stable for the rest)
-    results.sort((a, b) {
-      final aInstant = a.isDirectPlay || a.isCached;
-      final bInstant = b.isDirectPlay || b.isCached;
-      if (aInstant != bInstant) return aInstant ? -1 : 1;
-      return 0;
-    });
+    return mergeRankedStreams(
+      xtreamStreams: xtreamStreams,
+      torrentStreams: torrentStreams,
+    );
+  }
 
-    return results;
+  /// Merge already-ranked Xtream streams with torrent streams: Xtream first,
+  /// then cached torrents, then the rest, capped at [limit] total.
+  /// Concatenation + stable partition — never List.sort, which is unstable
+  /// on long lists and scrambles tied rows.
+  static List<ResolvedStream> mergeRankedStreams({
+    required List<ResolvedStream> xtreamStreams,
+    required List<ResolvedStream> torrentStreams,
+    int limit = 15,
+  }) {
+    final cappedXtream = xtreamStreams.take(limit).toList();
+    final cappedTorrents =
+        torrentStreams.take(max(0, limit - cappedXtream.length)).toList();
+    final cached = cappedTorrents.where((s) => s.isCached).toList();
+    final rest = cappedTorrents.where((s) => !s.isCached).toList();
+    return [...cappedXtream, ...cached, ...rest];
   }
 
   /// Find Xtream VOD/series matches for a title in the local DB.
@@ -334,7 +351,8 @@ class VodRepository {
   /// call per candidate (the catalog match itself needs no API calls).
   /// Matching combines the provider's TMDB id (exact, when populated) with
   /// a gated title comparison so partial-word hits like a sports event
-  /// mentioning the title don't surface. Returns at most 5 streams,
+  /// mentioning the title don't surface. A preferred locale breaks ties
+  /// between equivalent sources. Returns at most 5 streams,
   /// best match first.
   Future<List<ResolvedStream>> findXtreamStreams({
     required String title,
@@ -343,6 +361,7 @@ class VodRepository {
     VodTitleType mediaType = VodTitleType.movie,
     int? season,
     int? episode,
+    String? preferredLanguage,
   }) async {
     final database = _db;
     if (database == null) return [];
@@ -359,11 +378,17 @@ class VodRepository {
       final candidates = await database.searchXtreamVod(_likeToken(query));
       final ranked = _rankByTitle(
         candidates
-            .map((c) => (name: c.name, tmdb: c.tmdb, value: c))
+            .map((c) => (
+                  name: c.name,
+                  tmdb: c.tmdb,
+                  language: XtreamClient.extractLanguage(c.name),
+                  value: c,
+                ))
             .toList(),
         query,
         year: year,
         tmdbId: tmdbId,
+        preferredLanguage: preferredLanguage,
       );
       return ranked.take(5).map((c) {
         final vod = c.value;
@@ -373,6 +398,7 @@ class VodRepository {
           source: 'Xtream 📺 ${providerNames[vod.providerId] ?? ''}'.trim(),
           isCached: true,
           providerId: vod.providerId,
+          language: c.language,
         );
       }).toList();
     }
@@ -381,11 +407,17 @@ class VodRepository {
     final candidates = await database.searchXtreamSeries(_likeToken(query));
     final ranked = _rankByTitle(
       candidates
-          .map((c) => (name: c.name, tmdb: c.tmdb, value: c))
+          .map((c) => (
+                name: c.name,
+                tmdb: c.tmdb,
+                language: XtreamClient.extractLanguage(c.name),
+                value: c,
+              ))
           .toList(),
       query,
       year: year,
       tmdbId: tmdbId,
+      preferredLanguage: preferredLanguage,
     );
 
     final results = <ResolvedStream>[];
@@ -409,6 +441,7 @@ class VodRepository {
           isCached: true,
           providerId: row.providerId,
           xtreamSeriesId: row.seriesId,
+          language: XtreamClient.extractLanguage(row.name),
         ));
         continue;
       }
@@ -433,6 +466,7 @@ class VodRepository {
             isCached: true,
             providerId: row.providerId,
             xtreamSeriesId: row.seriesId,
+            language: XtreamClient.extractLanguage(row.name),
           ));
         } finally {
           client.dispose();
@@ -446,9 +480,11 @@ class VodRepository {
   }
 
   /// Normalize a Trakt/TMDB title for provider-catalog matching:
-  /// lowercase, strip year/tags, collapse separators.
+  /// lowercase, strip provider prefixes and year/tags, collapse separators.
+  /// Prefix stripping is shared with [XtreamClient.stripCatalogPrefix] so
+  /// matching and language display can never diverge.
   String _normalizeXtreamTitle(String title) {
-    var s = title.toLowerCase();
+    var s = XtreamClient.stripCatalogPrefix(title.toLowerCase());
     s = s.replaceAll(RegExp(r'\(\d{4}\)'), ' '); // " (2021)"
     s = s.replaceAll(RegExp(r'\[[^\]]*\]'), ' '); // "[...]"
     s = s.replaceAll(RegExp(r'[._\-:]+'), ' ');
@@ -472,17 +508,33 @@ class VodRepository {
   ///
   /// A provider-linked TMDB id match is trusted outright (strongest signal).
   /// Otherwise a candidate must survive a similarity gate: exact normalized
-  /// equality, query-as-prefix/suffix, or Dice similarity ≥ 0.5. This drops
-  /// titles that merely contain the query as one word among many (e.g.
-  /// "Moana" vs "SOC - Highlanders vs Moana Pasifika", similarity ~0.2).
-  /// A known year boosts same-year hits and penalizes different-year ones.
-  List<({String name, T value})> _rankByTitle<T>(
-    List<({String name, String? tmdb, T value})> candidates,
+  /// equality, or Dice similarity ≥ 0.5. Queries of two or more words get
+  /// extra leniency (query-as-affix with similarity ≥ 0.35, e.g. "Dune"
+  /// is a single word so "Dune Part Two" still needs ≥ 0.5 on its own).
+  /// Single-word queries otherwise match any title merely containing that
+  /// word (e.g. "Hope" vs "Not Without Hope (2025)", similarity ~0.33).
+  /// A matching year boosts (+5), a missing year sinks slightly (−8), and
+  /// a different confident year buries (−20) — so year-confirmed matches
+  /// always rank above year-less ones, which rank above wrong-year ones.
+  /// A row language matching the preferred locale adds a small tie-break
+  /// (+3): enough to order equivalent sources (e.g. sixteen TMDB-linked
+  /// localizations), never enough to outrank a stronger signal.
+  static const _minSimilarity = 0.5;
+  static const _minAffixSimilarity = 0.35;
+  static const _yearMatchBoost = 5.0;
+  static const _yearMissingPenalty = -8.0;
+  static const _yearMismatchPenalty = -20.0;
+  static const _localeMatchBoost = 3.0;
+
+  List<({String name, String? language, T value})> _rankByTitle<T>(
+    List<({String name, String? tmdb, String? language, T value})> candidates,
     String normalizedQuery, {
     int? year,
     int? tmdbId,
+    String? preferredLanguage,
   }) {
-    final scored = <({String name, T value, double score})>[];
+    final multiWord = normalizedQuery.contains(' ');
+    final scored = <({String name, String? language, T value, double score})>[];
     for (final c in candidates) {
       final tmdbMatch = tmdbId != null &&
           c.tmdb != null &&
@@ -492,37 +544,65 @@ class VodRepository {
         // Prefilter: every query word must appear in the candidate.
         if (!fuzzyMatchPasses(normalizedQuery, [c.name])) continue;
         final exact = normalizedName == normalizedQuery;
-        final affix = normalizedName.startsWith('$normalizedQuery ') ||
-            normalizedName.endsWith(' $normalizedQuery');
         final similarity = StringSimilarity.compareTwoStrings(
           normalizedQuery,
           normalizedName,
         );
-        if (!exact && !affix && similarity < 0.5) continue;
+        final affix = normalizedName.startsWith('$normalizedQuery ') ||
+            normalizedName.endsWith(' $normalizedQuery');
+        final affixPass =
+            multiWord && affix && similarity >= _minAffixSimilarity;
+        if (!exact && similarity < _minSimilarity && !affixPass) continue;
       }
       var score = fuzzyMatch(normalizedQuery, [c.name]);
+      score += _languageBoost(c.language, preferredLanguage);
       if (tmdbMatch) {
         score += 100;
       } else {
         if (normalizedName == normalizedQuery) score += 10;
         if (year != null) {
-          if (c.name.contains('$year')) {
-            score += 5;
+          final candidateYear = _firstYearIn(c.name);
+          if (candidateYear == null) {
+            // Title carries no year — rank below year-confirmed matches.
+            score += _yearMissingPenalty;
+          } else if (candidateYear == year) {
+            score += _yearMatchBoost;
           } else {
-            final otherYear = _firstYearIn(c.name);
-            if (otherYear != null && otherYear != year) score -= 8;
+            score += _yearMismatchPenalty;
           }
         }
       }
-      scored.add((name: c.name, value: c.value, score: score));
+      scored.add(
+          (name: c.name, language: c.language, value: c.value, score: score));
     }
     scored.sort((a, b) => b.score.compareTo(a.score));
-    return scored.map((e) => (name: e.name, value: e.value)).toList();
+    if (scored.isNotEmpty) {
+      _log.d(
+        '[Xtream] match "$normalizedQuery" (year=$year, tmdb=$tmdbId): '
+        '${scored.map((e) => '${e.name}=${e.score.toStringAsFixed(1)}').join(', ')}',
+      );
+    }
+    return scored
+        .map((e) => (name: e.name, language: e.language, value: e.value))
+        .toList();
   }
 
-  /// First 4-digit year (1900–2029) in a raw provider title, if any.
+  /// Small boost when a row's language prefix matches the preferred
+  /// locale (device language). Compared case-insensitively on primary
+  /// subtags, so "IN-EN" satisfies an "en" preference and "AR-SUBS"
+  /// satisfies "ar". Rows without a prefix are left alone, never punished.
+  double _languageBoost(String? rowLanguage, String? preferredLanguage) {
+    if (rowLanguage == null || preferredLanguage == null) return 0;
+    final pref = preferredLanguage.toLowerCase().split(RegExp(r'[-_]')).first;
+    if (pref.isEmpty) return 0;
+    final parts = rowLanguage.toLowerCase().split('-');
+    return parts.contains(pref) ? _localeMatchBoost : 0;
+  }
+
+  /// First 4-digit year (1900–2039) in a raw provider title, if any.
+  /// Word boundaries keep resolutions like "1080p"/"2160p" from matching.
   int? _firstYearIn(String text) {
-    final match = RegExp(r'\b(19\d{2}|20[0-2]\d)\b').firstMatch(text);
+    final match = RegExp(r'\b(19\d{2}|20[0-3]\d)\b').firstMatch(text);
     return match == null ? null : int.tryParse(match.group(1)!);
   }
 

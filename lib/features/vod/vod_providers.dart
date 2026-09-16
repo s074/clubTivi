@@ -132,6 +132,7 @@ final resolveStreamProvider =
     mediaType: params.mediaType,
     season: params.season,
     episode: params.episode,
+    preferredLanguage: params.preferredLanguage,
   );
 });
 
@@ -143,6 +144,7 @@ class StreamResolveParams {
   final VodTitleType mediaType;
   final int? season;
   final int? episode;
+  final String? preferredLanguage;
   const StreamResolveParams(
     this.imdbId, {
     this.title,
@@ -151,6 +153,7 @@ class StreamResolveParams {
     this.mediaType = VodTitleType.movie,
     this.season,
     this.episode,
+    this.preferredLanguage,
   });
 
   @override
@@ -163,7 +166,8 @@ class StreamResolveParams {
           tmdbId == other.tmdbId &&
           mediaType == other.mediaType &&
           season == other.season &&
-          episode == other.episode;
+          episode == other.episode &&
+          preferredLanguage == other.preferredLanguage;
 
   @override
   int get hashCode =>
@@ -173,7 +177,8 @@ class StreamResolveParams {
       (tmdbId ?? 0).hashCode ^
       mediaType.hashCode ^
       (season ?? 0).hashCode ^
-      (episode ?? 0).hashCode;
+      (episode ?? 0).hashCode ^
+      (preferredLanguage?.hashCode ?? 0);
 }
 
 /// API keys configuration state

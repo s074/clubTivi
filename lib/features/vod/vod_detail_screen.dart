@@ -409,6 +409,7 @@ class _VodDetailScreenState extends ConsumerState<VodDetailScreen> {
             year: vodTitle.year,
             tmdbId: vodTitle.tmdbId,
             mediaType: vodTitle.type,
+            preferredLanguage: _deviceLanguage(context),
           ),
         ).future,
       );
@@ -442,6 +443,7 @@ class _VodDetailScreenState extends ConsumerState<VodDetailScreen> {
             mediaType: vodTitle.type,
             season: episode.season,
             episode: episode.number,
+            preferredLanguage: _deviceLanguage(context),
           ),
         ).future,
       );
@@ -457,6 +459,11 @@ class _VodDetailScreenState extends ConsumerState<VodDetailScreen> {
       if (mounted) setState(() => _resolving = false);
     }
   }
+
+  /// Device UI language code ("en") used to prefer same-language sources.
+  /// Null when unavailable — ranking simply skips the locale tie-break.
+  String? _deviceLanguage(BuildContext context) =>
+      Localizations.maybeLocaleOf(context)?.languageCode;
 
   void _showStreamPicker(List<ResolvedStream> streams, String title) {
     showModalBottomSheet(
@@ -518,7 +525,7 @@ class _VodDetailScreenState extends ConsumerState<VodDetailScreen> {
                     final stream = streams[index];
                     return ListTile(
                       leading: stream.isXtream
-                          ? _xtreamSourceBadge()
+                          ? _xtreamSourceBadge(stream.language)
                           : _streamQualityBadge(stream.quality),
                       title: Text(
                         stream.filename,
@@ -529,6 +536,7 @@ class _VodDetailScreenState extends ConsumerState<VodDetailScreen> {
                       subtitle: Text(
                         [
                           stream.source,
+                          if (stream.language != null) stream.language!,
                           if (stream.isDirectPlay) 'direct',
                           if (stream.seeds != null) '👤 ${stream.seeds}',
                         ].join(' • '),
@@ -670,7 +678,9 @@ class _VodDetailScreenState extends ConsumerState<VodDetailScreen> {
     }
   }
 
-  Widget _xtreamSourceBadge() {
+  /// Language badge for Xtream rows ("EN", "AF-EN"); falls back to a
+  /// TV icon when the provider name carries no language prefix.
+  Widget _xtreamSourceBadge(String? language) {
     const color = Colors.tealAccent;
     return Container(
       width: 52,
@@ -680,7 +690,19 @@ class _VodDetailScreenState extends ConsumerState<VodDetailScreen> {
         borderRadius: BorderRadius.circular(6),
         border: Border.all(color: color.withValues(alpha: 0.4)),
       ),
-      child: const Icon(Icons.tv_rounded, color: color, size: 20),
+      child: language != null && language.isNotEmpty
+          ? Text(
+              language,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            )
+          : const Icon(Icons.tv_rounded, color: color, size: 20),
     );
   }
 

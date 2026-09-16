@@ -212,6 +212,47 @@ class XtreamClient {
     return '$baseUrl/series/$username/$password/$episodeId.$extension';
   }
 
+  /// Extract a language/country code prefix from a provider catalog name.
+  ///
+  /// Returns the uppercased code ("EN", "AF-EN", "IT") or null when the
+  /// name carries no prefix. Quality prefixes ("4K-") are skipped first.
+  /// Uses the same prefix shapes the matcher strips, so the language
+  /// removed for matching stays visible to the user when picking a stream.
+  static final _qualityPrefixPattern = RegExp(
+    r'^\s*(?:4k|8k|uhd|fhd|hd|hdr|hdcam|hdts|hdtv|cam|ts|tc|sd|3d)\s*[-|:]\s*',
+    caseSensitive: false,
+  );
+  static final _languagePrefixPattern = RegExp(
+    r'^\s*(?:\[([A-Za-z]{2}(?:-[A-Za-z]{2})?)\]|([A-Za-z]{2}(?:-[A-Za-z]{2})?)\s*[-|:])\s*',
+  );
+
+  /// Strip quality + language/country prefixes ("4K-IT - ", "EN - ",
+  /// "US | ", "[EN] ") that catalogs prepend to VOD/series names.
+  /// A separator is required — a bare 2-letter word ("Up", "It") is kept.
+  static String stripCatalogPrefix(String name) {
+    var result = name;
+    for (var i = 0; i < 4; i++) {
+      final next = result
+          .replaceFirst(_qualityPrefixPattern, '')
+          .replaceFirst(_languagePrefixPattern, '');
+      if (next == result) break;
+      result = next;
+    }
+    return result;
+  }
+
+  static String? extractLanguage(String rawName) {
+    var rest = rawName;
+    for (var i = 0; i < 4; i++) {
+      final next = rest.replaceFirst(_qualityPrefixPattern, '');
+      if (next == rest) break;
+      rest = next;
+    }
+    final match = _languagePrefixPattern.firstMatch(rest);
+    if (match == null) return null;
+    return (match.group(1) ?? match.group(2)!).toUpperCase();
+  }
+
   /// Resolve a specific season/episode of a series to a direct-play URL.
   ///
   /// Returns null when the season/episode isn't found in [getSeriesInfo].

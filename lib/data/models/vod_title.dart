@@ -165,6 +165,7 @@ class ResolvedStream extends Equatable {
   final int? seeds;
   final String? providerId; // Xtream provider that owns this stream
   final int? xtreamSeriesId; // Xtream series ID for series-level matches
+  final String? language; // Xtream language/country prefix ("EN", "AF-EN")
 
   const ResolvedStream({
     required this.url,
@@ -177,6 +178,7 @@ class ResolvedStream extends Equatable {
     this.seeds,
     this.providerId,
     this.xtreamSeriesId,
+    this.language,
   });
 
   /// Direct-play Xtream source: playable URL, no magnet resolution needed.

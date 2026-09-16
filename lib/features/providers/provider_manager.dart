@@ -11,6 +11,24 @@ import '../../data/services/logo_resolver_service.dart';
 import '../../core/feature_gate.dart';
 import 'package:dio/dio.dart';
 
+/// Deduplicate catalog items by (providerId, streamId), keeping the last
+/// occurrence — the same "last wins" semantics as the DB upsert.
+/// Only an exact key match counts: rows sharing just a name (different
+/// encodes or entries) or just a stream id (different providers) are kept.
+List<VodItem> dedupeVodItems(List<VodItem> items) {
+  final keyed = <String, VodItem>{};
+  final unkeyed = <VodItem>[];
+  for (final item in items) {
+    final streamId = item.streamId;
+    if (streamId == null) {
+      unkeyed.add(item);
+    } else {
+      keyed['${item.providerId}_$streamId'] = item;
+    }
+  }
+  return [...keyed.values, ...unkeyed];
+}
+
 /// Manages IPTV providers: adding, refreshing, channel loading.
 class ProviderManager {
   final db.AppDatabase _db;
@@ -167,7 +185,7 @@ class ProviderManager {
   /// Upsert VOD items into `xtream_vod` in chunks. Returns rows stored.
   Future<int> _saveVodItems(String providerId, List<VodItem> items) async {
     final entries = <db.XtreamVodCompanion>[];
-    for (final item in items) {
+    for (final item in dedupeVodItems(items)) {
       final streamId = item.streamId;
       final streamUrl = item.streamUrl;
       if (streamId == null || streamUrl == null) continue;
@@ -201,7 +219,7 @@ class ProviderManager {
   /// Upsert series items into `xtream_series` in chunks. Returns rows stored.
   Future<int> _saveSeriesItems(String providerId, List<VodItem> items) async {
     final entries = <db.XtreamSeriesCompanion>[];
-    for (final item in items) {
+    for (final item in dedupeVodItems(items)) {
       final seriesId = item.streamId;
       if (seriesId == null) continue;
       entries.add(
